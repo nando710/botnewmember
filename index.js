@@ -293,7 +293,7 @@ function iniciarColetaDeEmail(canal, usuario) {
                         try {
                             const member = await canal.guild.members.fetch(usuario.id);
                             await member.roles.add(CLIENT_ROLE_ID);
-                            await canal.send(`🎉 **Parabéns! O cargo <@&${CLIENT_ROLE_ID}> foi entregue.**`);
+                            await canal.send(`🎉 **Parabéns! O cargo <@&${CLIENT_ROLE_ID}> foi entregue e agora você tem acesso ao Discord dos Irmãos**`);
                         } catch (e) {
                             await canal.send(`⚠️ Compra aprovada, mas erro ao dar cargo: ${e.message}. Verifique a hierarquia de cargos.`);
                         }
@@ -315,3 +315,4 @@ function iniciarColetaDeEmail(canal, usuario) {
 }
 
 client.login(BOT_TOKEN);
+
