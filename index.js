@@ -41,7 +41,7 @@ const WEBHOOK_VALIDACAO_URL = process.env.WEBHOOK_VALIDACAO_URL;
 
 app.get('/', (req, res) => res.status(200).send('Bot Rodando 🚀'));
 
-// Rota de Banimento
+// Rota de Revogação (Refund/Chargeback) - Remove Cargos ao invés de banir
 app.post('/webhook/ban', async (req, res) => {
     const { secret, discord_id, reason } = req.body;
     if (!ADMIN_SECRET || secret !== ADMIN_SECRET) return res.status(403).json({ error: "Acesso Negado." });
@@ -51,10 +51,22 @@ app.post('/webhook/ban', async (req, res) => {
         const guild = client.guilds.cache.get(GUILD_ID);
         if (!guild) return res.status(500).json({ error: "Guild não encontrada." });
 
-        await guild.members.ban(discord_id, { reason: reason || 'Banimento automático' });
-        return res.json({ success: true, message: `Banido com sucesso.` });
+        // Busca o membro no servidor
+        const member = await guild.members.fetch(discord_id).catch(() => null);
+
+        if (!member) {
+            return res.json({ success: false, message: `Usuário ${discord_id} não está no servidor (já saiu ou nunca entrou).` });
+        }
+
+        // Remove os cargos configurados (VIP e Membro)
+        if (CLIENT_ROLE_ID) await member.roles.remove(CLIENT_ROLE_ID).catch(e => console.error(`Erro remove VIP: ${e.message}`));
+        if (ROLE_ID) await member.roles.remove(ROLE_ID).catch(e => console.error(`Erro remove Membro: ${e.message}`));
+
+        console.log(`📉 CARGOS REMOVIDOS: ID ${discord_id} | Motivo: ${reason}`);
+        return res.json({ success: true, message: `Acesso revogado (Cargos removidos).` });
+
     } catch (error) {
-        return res.status(500).json({ error: "Erro ao banir.", details: error.message });
+        return res.status(500).json({ error: "Erro ao processar revogação.", details: error.message });
     }
 });
 
