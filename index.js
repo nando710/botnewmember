@@ -7,7 +7,6 @@ const { Client, GatewayIntentBits, ActionRowBuilder, ButtonBuilder, ButtonStyle,
 const app = express();
 const port = process.env.PORT || 3000;
 
-// Permite JSON (necessário para o Webhook de Ban)
 app.use(express.json());
 
 const client = new Client({
@@ -27,91 +26,64 @@ const GUILD_ID = process.env.GUILD_ID;
 const REDIRECT_URI = process.env.REDIRECT_URI; 
 const ADMIN_SECRET = process.env.ADMIN_SECRET;
 
-// Variáveis dos Cargos e Tickets
 const CATEGORY_ID = process.env.CATEGORY_ID;         
 const SUPPORT_ROLE_ID = process.env.SUPPORT_ROLE_ID; 
-const ROLE_ID = process.env.ROLE_ID;                // Cargo Membro
+const ROLE_ID = process.env.ROLE_ID;                // Cargo Membro (SERÁ REMOVIDO NO VIP)
 const CLIENT_ROLE_ID = process.env.CLIENT_ROLE_ID;  // Cargo VIP
 const TICKET_CHANNEL_ID = process.env.TICKET_CHANNEL_ID;
 
-// Webhooks (n8n)
 const WEBHOOK_AUTH_URL = process.env.MEU_WEBHOOK_URL;       
 const WEBHOOK_VALIDACAO_URL = process.env.WEBHOOK_VALIDACAO_URL;
 
 // =================================================================
-//  PARTE 1: SERVIDOR WEB 
+//  PARTE 1: SERVIDOR WEB (Login + Banimento)
 // =================================================================
 
-app.get('/', (req, res) => {
-    res.status(200).send('Bot Unificado Rodando 🚀');
-});
+app.get('/', (req, res) => res.status(200).send('Bot Rodando 🚀'));
 
-// WEBHOOK DE BANIMENTO (Refund/Chargeback)
+// Rota de Banimento
 app.post('/webhook/ban', async (req, res) => {
     const { secret, discord_id, reason } = req.body;
-
-    if (!ADMIN_SECRET || secret !== ADMIN_SECRET) {
-        return res.status(403).json({ error: "Acesso Negado: Secret incorreto." });
-    }
-
+    if (!ADMIN_SECRET || secret !== ADMIN_SECRET) return res.status(403).json({ error: "Acesso Negado." });
     if (!discord_id) return res.status(400).json({ error: "Faltando discord_id." });
 
     try {
         const guild = client.guilds.cache.get(GUILD_ID);
         if (!guild) return res.status(500).json({ error: "Guild não encontrada." });
 
-        await guild.members.ban(discord_id, { reason: reason || 'Banimento automático (Refund)' });
-        console.log(`🚫 USUÁRIO BANIDO: ID ${discord_id} | Motivo: ${reason}`);
-
+        await guild.members.ban(discord_id, { reason: reason || 'Banimento automático' });
         return res.json({ success: true, message: `Banido com sucesso.` });
     } catch (error) {
-        console.error(`Erro ban:`, error);
         return res.status(500).json({ error: "Erro ao banir.", details: error.message });
     }
 });
 
-// ROTAS DE LOGIN
+// Rota Login
 app.get('/login', (req, res) => {
     const emailDaCompra = req.query.email; 
-    if (!CLIENT_ID || !REDIRECT_URI) return res.status(500).send('Erro: .env incompleto.');
-
     const stateData = emailDaCompra ? encodeURIComponent(emailDaCompra) : '';
     const scopes = 'identify guilds.join email';
     const url = `https://discord.com/api/oauth2/authorize?client_id=${CLIENT_ID}&redirect_uri=${encodeURIComponent(REDIRECT_URI)}&response_type=code&scope=${encodeURIComponent(scopes)}&state=${stateData}`;
     res.redirect(url);
 });
 
+// Rota Callback
 app.get('/callback', async (req, res) => {
     const { code, state } = req.query; 
-    if (!code) return res.send('Erro: Sem código do Discord.');
-
-    const emailCompraRecuperado = state ? decodeURIComponent(state) : "Não informado";
+    if (!code) return res.send('Erro: Sem código.');
+    const emailCompra = state ? decodeURIComponent(state) : "Não informado";
 
     try {
-        const params = new URLSearchParams({
-            client_id: CLIENT_ID,
-            client_secret: CLIENT_SECRET,
-            grant_type: 'authorization_code',
-            code,
-            redirect_uri: REDIRECT_URI,
-        });
-
+        const params = new URLSearchParams({ client_id: CLIENT_ID, client_secret: CLIENT_SECRET, grant_type: 'authorization_code', code, redirect_uri: REDIRECT_URI });
         const tokenResponse = await axios.post('https://discord.com/api/oauth2/token', params, { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
         const { access_token } = tokenResponse.data;
-
         const userResponse = await axios.get('https://discord.com/api/users/@me', { headers: { Authorization: `Bearer ${access_token}` } });
         const userData = userResponse.data;
 
-        // Entrar no Servidor + Cargo Membro
         if (GUILD_ID) {
             try {
-                await axios.put(
-                    `https://discord.com/api/guilds/${GUILD_ID}/members/${userData.id}`,
-                    { access_token: access_token }, 
-                    { headers: { 'Authorization': `Bot ${BOT_TOKEN}`, 'Content-Type': 'application/json' } }
-                );
-            } catch (joinError) {}
-
+                await axios.put(`https://discord.com/api/guilds/${GUILD_ID}/members/${userData.id}`, { access_token }, { headers: { 'Authorization': `Bot ${BOT_TOKEN}`, 'Content-Type': 'application/json' } });
+            } catch (e) {}
             if (ROLE_ID) {
                 try {
                     const guild = client.guilds.cache.get(GUILD_ID);
@@ -119,96 +91,36 @@ app.get('/callback', async (req, res) => {
                         const member = await guild.members.fetch(userData.id).catch(() => null);
                         if (member) await member.roles.add(ROLE_ID);
                     }
-                } catch (roleError) { console.error('Erro ao dar cargo inicial.'); }
+                } catch (e) {}
             }
         }
 
-        // Webhook n8n
-        if (WEBHOOK_AUTH_URL) {
-            axios.post(WEBHOOK_AUTH_URL, {
-                tipo: "LOGIN_SITE",
-                email_compra: emailCompraRecuperado,
-                discord_id: userData.id,
-                username: userData.username,
-                email_discord: userData.email,
-                data: new Date().toISOString()
-            }).catch(e => console.error('Erro webhook auth:', e.message));
-        }
+        if (WEBHOOK_AUTH_URL) axios.post(WEBHOOK_AUTH_URL, { tipo: "LOGIN_SITE", email_compra: emailCompra, discord_id: userData.id, username: userData.username, email_discord: userData.email, data: new Date().toISOString() }).catch(() => {});
 
-        // --- TELA DE SUCESSO COM REDIRECIONAMENTO ---
-        // Link direto para o canal do servidor
         const discordRedirectUrl = `https://discord.com/channels/${GUILD_ID}`;
-        
-        res.send(`
-            <!DOCTYPE html>
-            <html lang="pt-BR">
-            <head>
-                <meta charset="UTF-8">
-                <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                <title>Sucesso!</title>
-                <style>
-                    body { background-color: #2c2f33; color: white; font-family: sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0; }
-                    .box { background: #23272a; padding: 40px; border-radius: 10px; text-align: center; box-shadow: 0 4px 15px rgba(0,0,0,0.3); max-width: 90%; }
-                    h1 { color: #5865F2; margin-bottom: 10px; }
-                    p { color: #b9bbbe; margin-bottom: 20px; }
-                    .btn { background: #5865F2; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; font-weight: bold; display: inline-block; margin-top: 10px; transition: background 0.2s; }
-                    .btn:hover { background: #4752c4; }
-                    .loader { border: 4px solid #f3f3f3; border-top: 4px solid #5865F2; border-radius: 50%; width: 20px; height: 20px; animation: spin 1s linear infinite; margin: 15px auto; }
-                    @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
-                </style>
-            </head>
-            <body>
-                <div class="box">
-                    <h1>Tudo certo! 🎉</h1>
-                    <p>Sua conta foi vinculada com sucesso.</p>
-                    
-                    <div class="loader"></div>
-                    <p style="font-size: 14px;">Levando você para o Discord...</p>
-                    
-                    <a href="${discordRedirectUrl}" class="btn">Abrir Discord Agora</a>
-                </div>
+        res.send(`<!DOCTYPE html><html><head><meta charset="UTF-8"><meta http-equiv="refresh" content="3;url=${discordRedirectUrl}"></head><body style="background:#2c2f33;color:white;display:flex;justify-content:center;align-items:center;height:100vh;font-family:sans-serif;text-align:center;"><div><h1>Sucesso! 🎉</h1><p>Redirecionando para o Discord...</p></div></body></html>`);
 
-                <script>
-                    // Tenta redirecionar automaticamente após 3 segundos
-                    setTimeout(function() {
-                        window.location.href = "${discordRedirectUrl}";
-                    }, 3000);
-                </script>
-            </body>
-            </html>
-        `);
-
-    } catch (error) {
-        console.error('Erro Callback:', error.message);
-        res.status(500).send('Erro na autenticação. Tente novamente.');
-    }
+    } catch (error) { res.status(500).send('Erro na autenticação.'); }
 });
 
-app.listen(port, () => {
-    console.log(`🌍 Servidor Web rodando na porta ${port}`);
-});
-
+app.listen(port, () => console.log(`🌍 Rodando na porta ${port}`));
 
 // =================================================================
-//  PARTE 2: CLIENTE DISCORD 
+//  PARTE 2: TICKETS DISCORD (COM NOVAS REGRAS)
 // =================================================================
 
 client.on('ready', async () => {
-    console.log(`🤖 Bot Discord Logado: ${client.user.tag}`);
-    
+    console.log(`🤖 Logado como ${client.user.tag}`);
     if (TICKET_CHANNEL_ID) {
         const canalTickets = client.channels.cache.get(TICKET_CHANNEL_ID);
         if (canalTickets) {
             try {
-                const ultimasMensagens = await canalTickets.messages.fetch({ limit: 1 });
-                const ultimaMsg = ultimasMensagens.first();
-                
-                if (!ultimaMsg || ultimaMsg.author.id !== client.user.id) {
-                    const embed = new EmbedBuilder().setColor('#0099ff').setTitle('Validação de Acesso VIP').setDescription('Clique abaixo para validar sua compra.');
+                const msgs = await canalTickets.messages.fetch({ limit: 1 });
+                if (!msgs.first() || msgs.first().author.id !== client.user.id) {
                     const row = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('abrir_ticket').setLabel('Validar Compra').setEmoji('💎').setStyle(ButtonStyle.Success));
-                    await canalTickets.send({ embeds: [embed], components: [row] });
+                    await canalTickets.send({ embeds: [new EmbedBuilder().setColor('#0099ff').setTitle('Validação VIP').setDescription('Clique abaixo para validar.')], components: [row] });
                 }
-            } catch (e) { console.log('⚠️ Erro ao postar painel tickets:', e.message); }
+            } catch (e) {}
         }
     }
 });
@@ -218,16 +130,14 @@ client.on('interactionCreate', async (interaction) => {
 
     if (interaction.customId === 'abrir_ticket') {
         const nomeCanal = `ticket-${interaction.user.username.toLowerCase().replace(/[^a-z0-9]/g, '')}`;
-        const jaTemTicket = interaction.guild.channels.cache.find(c => c.name === nomeCanal);
-        if (jaTemTicket) return interaction.reply({ content: `⚠️ Você já tem um ticket: ${jaTemTicket}`, ephemeral: true });
+        const jaTem = interaction.guild.channels.cache.find(c => c.name === nomeCanal);
+        if (jaTem) return interaction.reply({ content: `⚠️ Ticket já aberto: ${jaTem}`, ephemeral: true });
 
         await interaction.deferReply({ ephemeral: true });
 
         try {
             const canal = await interaction.guild.channels.create({
-                name: nomeCanal,
-                type: ChannelType.GuildText,
-                parent: CATEGORY_ID,
+                name: nomeCanal, type: ChannelType.GuildText, parent: CATEGORY_ID,
                 permissionOverwrites: [
                     { id: interaction.guild.id, deny: [PermissionsBitField.Flags.ViewChannel] },
                     { id: interaction.user.id, allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages] },
@@ -235,64 +145,129 @@ client.on('interactionCreate', async (interaction) => {
                     { id: client.user.id, allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages] }
                 ]
             });
-
-            await interaction.editReply({ content: `✅ Ticket criado: ${canal}` });
-            const embed = new EmbedBuilder().setTitle(`Olá, ${interaction.user.username}`).setDescription('**Digite o E-MAIL usado na compra:**').setColor('#f1c40f');
-            const btn = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('fechar_ticket').setLabel('Fechar').setStyle(ButtonStyle.Danger));
-            await canal.send({ content: `<@${interaction.user.id}>`, embeds: [embed], components: [btn] });
+            await interaction.editReply({ content: `✅ Ticket: ${canal}` });
+            
+            const btn = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('fechar_ticket').setLabel('Cancelar').setStyle(ButtonStyle.Danger));
+            await canal.send({ content: `<@${interaction.user.id}>`, embeds: [new EmbedBuilder().setTitle(`Olá, ${interaction.user.username}`).setDescription('**Digite o E-MAIL da compra:**').setColor('#f1c40f')], components: [btn] });
+            
             iniciarColetaDeEmail(canal, interaction.user);
 
-        } catch (error) {
-            console.error(error);
-            await interaction.editReply('❌ Erro ao criar ticket. Verifique CATEGORY_ID.');
-        }
+        } catch (e) { await interaction.editReply('❌ Erro ao criar ticket.'); }
     }
 
     if (interaction.customId === 'fechar_ticket') {
-        await interaction.reply('Encerrando...');
+        await interaction.reply('Fechando em 3s...');
         setTimeout(() => interaction.channel?.delete().catch(() => {}), 3000);
     }
 });
 
+// --- FUNÇÃO PRINCIPAL COM AS NOVAS REGRAS ---
 function iniciarColetaDeEmail(canal, usuario) {
+    // 1. Coletor de Mensagem (E-mail) com Timeout de 2 min
     const filter = m => m.author.id === usuario.id;
-    const collector = canal.createMessageCollector({ filter, max: 1 });
+    const collector = canal.createMessageCollector({ filter, max: 1, time: 120000 }); // 120.000ms = 2 minutos
 
     collector.on('collect', async (msg) => {
         const email = msg.content.trim();
+        
         const row = new ActionRowBuilder().addComponents(
             new ButtonBuilder().setCustomId('sim').setLabel('Confirmar').setStyle(ButtonStyle.Success),
             new ButtonBuilder().setCustomId('nao').setLabel('Corrigir').setStyle(ButtonStyle.Secondary)
         );
 
         const msgConf = await canal.send({ content: `E-mail: **${email}**. Confirma?`, components: [row] });
-        const btnCol = msgConf.createMessageComponentCollector({ componentType: ComponentType.Button, time: 60000 });
+        
+        // 2. Coletor de Botões com Timeout de 2 min
+        const btnCol = msgConf.createMessageComponentCollector({ componentType: ComponentType.Button, time: 120000 });
 
         btnCol.on('collect', async (i) => {
             if (i.user.id !== usuario.id) return;
+
             if (i.customId === 'sim') {
                 await i.update({ content: `🔄 Validando **${email}**...`, components: [] });
+                
                 try {
                     const resp = await axios.post(WEBHOOK_VALIDACAO_URL, { tipo: "VALIDACAO_TICKET", email: email, discord_id: usuario.id, username: usuario.username });
-                    const texto = resp.data.reply || "Processado.";
                     const aprovado = resp.data.approved === true;
+                    const texto = resp.data.reply || (aprovado ? "Acesso Liberado!" : "E-mail não encontrado ou compra reembolsada.");
+
                     await canal.send({ embeds: [new EmbedBuilder().setDescription(texto).setColor(aprovado ? '#00FF00' : '#FF0000')] });
-                    if (aprovado && CLIENT_ROLE_ID) {
-                        try {
-                            const member = await canal.guild.members.fetch(usuario.id);
-                            await member.roles.add(CLIENT_ROLE_ID);
-                            await canal.send(`🎉 Cargo <@&${CLIENT_ROLE_ID}> entregue!`);
-                        } catch (e) { await canal.send(`⚠️ Erro cargo: ${e.message}`); }
+
+                    if (aprovado) {
+                        // === REGRA: ENTREGAR VIP E REMOVER MEMBRO COMUM ===
+                        if (CLIENT_ROLE_ID) {
+                            try {
+                                const member = await canal.guild.members.fetch(usuario.id);
+                                await member.roles.add(CLIENT_ROLE_ID);
+                                // Remove o cargo antigo se existir
+                                if (ROLE_ID) await member.roles.remove(ROLE_ID).catch(e => console.log('Erro ao remover cargo antigo:', e.message));
+                                
+                                await canal.send(`🎉 **Sucesso!** Cargo VIP entregue e cargo Membro removido.`);
+                                
+                                // Opcional: Fechar ticket automaticamente após sucesso
+                                setTimeout(() => canal.send("Este ticket será fechado em 5 segundos..."), 2000);
+                                setTimeout(() => canal.delete().catch(() => {}), 7000);
+                            } catch (e) { await canal.send(`⚠️ Erro na troca de cargos: ${e.message}`); }
+                        }
+                    } else {
+                        // === REGRA: TENTAR OUTRO E-MAIL ===
+                        const rowRetry = new ActionRowBuilder().addComponents(
+                            new ButtonBuilder().setCustomId('tentar_dnv').setLabel('Tentar Outro E-mail').setStyle(ButtonStyle.Primary),
+                            new ButtonBuilder().setCustomId('fechar_ticket').setLabel('Cancelar').setStyle(ButtonStyle.Danger)
+                        );
+                        
+                        const msgRetry = await canal.send({ content: "❌ Validação falhou. Deseja tentar com outro e-mail?", components: [rowRetry] });
+                        
+                        // Pequeno coletor para decidir se tenta de novo
+                        const retryCol = msgRetry.createMessageComponentCollector({ componentType: ComponentType.Button, time: 60000 });
+                        
+                        retryCol.on('collect', async (intRetry) => {
+                            if (intRetry.user.id !== usuario.id) return;
+                            if (intRetry.customId === 'tentar_dnv') {
+                                await intRetry.update({ content: "🔄 Ok, digite o novo e-mail abaixo:", components: [] });
+                                iniciarColetaDeEmail(canal, usuario); // RECURSIVIDADE: Chama a função de novo
+                                retryCol.stop();
+                            } else if (intRetry.customId === 'fechar_ticket') {
+                                await intRetry.reply("Fechando...");
+                                setTimeout(() => canal.delete().catch(() => {}), 2000);
+                            }
+                        });
                     }
-                } catch (e) { await canal.send('❌ Erro de validação (API Offline).'); }
+                } catch (e) { 
+                    await canal.send('❌ Erro de conexão com o servidor de validação.'); 
+                }
                 btnCol.stop();
-            } else {
+
+            } else if (i.customId === 'nao') {
                 await i.update({ content: '⚠️ Digite o e-mail novamente:', components: [] });
-                iniciarColetaDeEmail(canal, usuario);
+                iniciarColetaDeEmail(canal, usuario); // Tenta de novo (correção)
                 btnCol.stop();
             }
         });
+
+        // Timeout do Coletor de Botões
+        btnCol.on('end', (c, reason) => {
+            if (reason === 'time') {
+                tratarInatividade(canal);
+            }
+        });
     });
+
+    // Timeout do Coletor de Mensagem (se ele não digitar nada em 2 min)
+    collector.on('end', (collected, reason) => {
+        if (reason === 'time') {
+            tratarInatividade(canal);
+        }
+    });
+}
+
+// Função auxiliar para fechar ticket por inatividade
+function tratarInatividade(canal) {
+    // Verifica se o canal ainda existe antes de tentar enviar msg
+    if (canal) {
+        canal.send('⚠️ **Tempo esgotado.** O atendimento foi encerrado por inatividade (2 minutos). Fechando ticket...').catch(() => {});
+        setTimeout(() => canal.delete().catch(() => {}), 5000);
+    }
 }
 
 client.login(BOT_TOKEN);
