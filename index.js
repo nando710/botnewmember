@@ -93,17 +93,35 @@ app.get('/callback', async (req, res) => {
         const userData = userResponse.data;
 
         if (GUILD_ID) {
+            // Tenta adicionar o usuário ao servidor (Auto-Join)
             try {
-                await axios.put(`https://discord.com/api/guilds/${GUILD_ID}/members/${userData.id}`, { access_token }, { headers: { 'Authorization': `Bot ${BOT_TOKEN}`, 'Content-Type': 'application/json' } });
-            } catch (e) {}
+                await axios.put(
+                    `https://discord.com/api/guilds/${GUILD_ID}/members/${userData.id}`, 
+                    { access_token: access_token }, 
+                    { headers: { 'Authorization': `Bot ${BOT_TOKEN}`, 'Content-Type': 'application/json' } }
+                );
+                console.log(`✅ Auto-Join: ${userData.username} adicionado com sucesso.`);
+            } catch (joinError) {
+                // Log detalhado para debug
+                console.error(`⚠️ Falha no Auto-Join para ${userData.username}:`, joinError.response?.data || joinError.message);
+            }
+
+            // Tenta entregar o cargo inicial (Membro)
             if (ROLE_ID) {
                 try {
                     const guild = client.guilds.cache.get(GUILD_ID);
                     if (guild) {
+                        // Pequeno delay para garantir que o discord processou a entrada
                         const member = await guild.members.fetch(userData.id).catch(() => null);
-                        if (member) await member.roles.add(ROLE_ID);
+                        if (member) {
+                            await member.roles.add(ROLE_ID);
+                        } else {
+                            console.log(`⚠️ Membro ${userData.username} não encontrado no cache para dar cargo (Talvez Auto-Join tenha falhado).`);
+                        }
                     }
-                } catch (e) {}
+                } catch (roleError) {
+                    console.error(`❌ Erro ao dar cargo inicial:`, roleError.message);
+                }
             }
         }
 
@@ -112,7 +130,10 @@ app.get('/callback', async (req, res) => {
         const discordRedirectUrl = `https://discord.com/channels/${GUILD_ID}`;
         res.send(`<!DOCTYPE html><html><head><meta charset="UTF-8"><meta http-equiv="refresh" content="3;url=${discordRedirectUrl}"></head><body style="background:#2c2f33;color:white;display:flex;justify-content:center;align-items:center;height:100vh;font-family:sans-serif;text-align:center;"><div><h1>Sucesso! 🎉</h1><p>Redirecionando para o Discord...</p></div></body></html>`);
 
-    } catch (error) { res.status(500).send('Erro na autenticação.'); }
+    } catch (error) { 
+        console.error("Erro Callback:", error.message);
+        res.status(500).send('Erro na autenticação.'); 
+    }
 });
 
 app.listen(port, () => console.log(`🌍 Rodando na porta ${port}`));
